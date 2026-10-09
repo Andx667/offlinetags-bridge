@@ -2,12 +2,16 @@
 
 Brings [OfflineTags](https://github.com/fiker31/Offline-Tags) privacy-badge detection into photo
 editors. A small local daemon keeps the models loaded, and a thin client hands it one photo at a
-time. The first integration is IrfanView: press `Shift+1` on an open photo and get the processed
-copy back.
+time. Two integrations exist:
+
+- **IrfanView:** press `Shift+1` on an open photo and get the processed copy back.
+- **Affinity** (and other hosts of Photoshop `.8bf` filters): a filter that pixelates tagged faces
+  on the current layer.
 
 The models run on ONNX Runtime, so PyTorch is not needed at runtime.
 
-**Status: prototype.** Windows only so far.
+**Status: prototype.** Windows only so far. The Affinity plug-in passes its tests against a
+stand-in host but has not been confirmed inside Affinity yet.
 
 ## What it does
 
@@ -100,9 +104,39 @@ and saves a backup first.
 For folders, use the command line or IrfanView's thumbnail view with "Send all filenames in one
 call" enabled; the client accepts several files.
 
+## Affinity
+
+`OfflineTags.8bf` is a Photoshop-compatible filter plug-in. It pixelates the faces of people
+wearing a **Blur Me** badge directly on the current pixel layer, as one undoable step. For
+**No Photo** it shows a warning and changes nothing. It draws no consent boxes.
+
+Build and install (needs Visual Studio or the Build Tools with the C++ workload; the Adobe SDK is
+not required):
+
+```powershell
+.\affinity\build.ps1
+.\affinity\install.ps1
+```
+
+`install.ps1` copies the plug-in to `~\.offlinetags-bridge\plugins` and records the path of
+`offlinetags-bridge.exe` in `~\.offlinetags-bridge\client.txt`, which is how the plug-in finds the
+client. Then, once, in Affinity:
+
+1. Open **Settings > Photoshop Plugins**.
+2. Add `~\.offlinetags-bridge\plugins` as a plug-in search folder (the script prints the full path).
+3. Tick **Allow unknown plugins to be used**.
+4. Restart Affinity.
+
+The filter then appears as **Filters > Plugins > OfflineTags > Blur Tagged Faces**.
+
+It works on 8-bit and 16-bit RGB documents. Detection sees only the layer (or the bounds of the
+selection) the filter runs on, so apply it to the photo layer without a selection. The plug-in
+passes the pixels through an uncompressed temporary file in `~\.offlinetags-bridge\tmp`, which it
+deletes afterwards.
+
 ## How it works
 
-```
+```text
 IrfanView --Shift+1--> offlinetags-irfanview.exe --HTTP on 127.0.0.1--> daemon (models loaded)
                               |                                              |
                               +--- opens photo.offlinetags.jpg <--- writes --+
@@ -117,6 +151,10 @@ IrfanView --Shift+1--> offlinetags-irfanview.exe --HTTP on 127.0.0.1--> daemon (
 - **Pipeline** ([pipeline.py](src/offlinetags_bridge/pipeline.py)): a port of the upstream logic.
   Badge detection and person detection run on ONNX Runtime ([yolo.py](src/offlinetags_bridge/yolo.py));
   faces are found with OpenCV Haar cascades, as upstream does.
+
+- **Affinity plug-in** ([plugin.c](affinity/plugin.c)): a small C DLL that writes the layer to a
+  BMP, runs the client on it and copies the changed pixels back. The host interface is declared in
+  [filter_api.h](affinity/filter_api.h) and the menu entry in [pipl.rc](affinity/pipl.rc).
 
 `POST /process` takes `{"input", "output", "annotate", "jpeg_quality"}` and returns the action, the
 detections and `blur_regions` (pixel boxes of every blurred face), which a future editor plugin can
@@ -158,7 +196,9 @@ Deliberate differences:
 .venv\Scripts\pytest
 ```
 
-The tests need no model files.
+The core tests need no model files. The plug-in tests run once `affinity\build.ps1` has been run:
+they load the `.8bf` into a minimal filter host ([filter_host.py](tests/filter_host.py)) and, with
+the models and `samples/` present, run it end to end.
 
 ## Licence
 
