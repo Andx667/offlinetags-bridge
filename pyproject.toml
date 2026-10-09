@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offlinetags-bridge"
+version = "0.1.0"
+description = "Local daemon that brings OfflineTags privacy-badge detection to photo editors such as IrfanView, running on ONNX"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.21",
+    "onnxruntime>=1.17",
+    # OpenCV 5 removed CascadeClassifier, which the face blur uses
+    "opencv-python-headless>=4.5,<5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+offlinetags-bridge = "offlinetags_bridge.client:main"
+
+[project.gui-scripts]
+offlinetags-irfanview = "offlinetags_bridge.client:gui_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

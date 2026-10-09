@@ -1,0 +1,13 @@
+.venv/
+.venv-export/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# exported from upstream weights by tools/export_onnx.py, not redistributed here
+models/
+
+# processed copies written next to test photos
+*.offlinetags.*
