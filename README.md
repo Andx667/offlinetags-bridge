@@ -7,8 +7,7 @@ copy back.
 
 The models run on ONNX Runtime, so PyTorch is not needed at runtime.
 
-**Status: prototype.** Windows only so far, and the IrfanView registration script has not been
-confirmed inside IrfanView yet (see [IrfanView](#irfanview)).
+**Status: prototype.** Windows only so far.
 
 ## What it does
 
@@ -96,9 +95,7 @@ If PowerShell refuses to run scripts, use
 `powershell -ExecutionPolicy Bypass -File irfanview\install.ps1`.
 
 The script writes `ExternalViewer` into the `[Others]` section of `%APPDATA%\IrfanView\i_view64.ini`
-and saves a backup first. The key name comes from the IrfanView binary; the section is an
-assumption that still has to be confirmed in IrfanView itself. If `Shift+1` does nothing after
-running it, use the manual steps.
+and saves a backup first.
 
 For folders, use the command line or IrfanView's thumbnail view with "Send all filenames in one
 call" enabled; the client accepts several files.
