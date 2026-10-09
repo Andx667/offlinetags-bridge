@@ -11,3 +11,6 @@ models/
 
 # processed copies written next to test photos
 *.offlinetags.*
+
+# local test photos (upstream samples, not redistributed)
+samples/
