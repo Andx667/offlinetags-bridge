@@ -10,8 +10,7 @@ time. Two integrations exist:
 
 The models run on ONNX Runtime, so PyTorch is not needed at runtime.
 
-**Status: prototype.** Windows only so far. The Affinity plug-in passes its tests against a
-stand-in host but has not been confirmed inside Affinity yet.
+**Status: prototype.** Windows only so far. Confirmed with IrfanView 4.76 and Affinity 3.3.
 
 ## What it does
 
@@ -127,12 +126,16 @@ client. Then, once, in Affinity:
 3. Tick **Allow unknown plugins to be used**.
 4. Restart Affinity.
 
-The filter then appears as **Filters > Plugins > OfflineTags > Blur Tagged Faces**.
+With a document open and a pixel layer selected, the filter is at
+**Pixel > Filters > Plugins > OfflineTags > Blur Tagged Faces**.
 
 It works on 8-bit and 16-bit RGB documents. Detection sees only the layer (or the bounds of the
 selection) the filter runs on, so apply it to the photo layer without a selection. The plug-in
 passes the pixels through an uncompressed temporary file in `~\.offlinetags-bridge\tmp`, which it
 deletes afterwards.
+
+If the filter does nothing, look at `~\.offlinetags-bridge\plugin.log`: the plug-in records every
+call from the host there. To rebuild, close Affinity first, because it keeps the `.8bf` open.
 
 ## How it works
 

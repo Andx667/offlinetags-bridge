@@ -9,7 +9,9 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -41,6 +43,39 @@ static BOOL state_dir(wchar_t *out)
         return FALSE;
     wcscat_s(out, PATH_CHARS, L"\\.offlinetags-bridge");
     return TRUE;
+}
+
+/* Appends a line to %USERPROFILE%\.offlinetags-bridge\plugin.log. A host gives a
+ * plug-in no console, so this is the only way to see what it was asked to do. */
+static void trace(const char *format, ...)
+{
+    wchar_t path[PATH_CHARS];
+    if (!state_dir(path))
+        return;
+    CreateDirectoryW(path, NULL);
+    wcscat_s(path, PATH_CHARS, L"\\plugin.log");
+
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    BOOL restart = GetFileAttributesExW(path, GetFileExInfoStandard, &info) && info.nFileSizeLow > 256 * 1024;
+    HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                              restart ? CREATE_ALWAYS : OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+
+    char line[600];
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    int used = sprintf_s(line, sizeof line, "%04d-%02d-%02d %02d:%02d:%02d ",
+                         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+    va_list args;
+    va_start(args, format);
+    int more = vsnprintf_s(line + used, sizeof line - used - 2, _TRUNCATE, format, args);
+    va_end(args);
+    used += more < 0 ? (int)strlen(line + used) : more;
+    line[used++] = '\n';
+    DWORD written;
+    WriteFile(file, line, (DWORD)used, &written, NULL);
+    CloseHandle(file);
 }
 
 static BOOL read_file(const wchar_t *path, uint8_t **data, DWORD *size)
@@ -168,15 +203,22 @@ static void report_failure(const wchar_t *log_path)
     notify(message, MB_ICONERROR);
 }
 
+static int sample_bytes(const FilterRecord *rec)
+{
+    return rec->depth == 16 || rec->imageMode == plugInModeRGB48 ? 2 : 1;
+}
+
 /* The work: called with inData and outData covering filterRect, RGB interleaved. */
 static int16_t filter_pixels(FilterRecord *rec)
 {
     const int width = rec->inRect.right - rec->inRect.left;
     const int height = rec->inRect.bottom - rec->inRect.top;
-    const int bytes = rec->depth == 16 ? 2 : 1;
+    const int bytes = sample_bytes(rec);
     const int pixel = 3 * bytes;
     const uint8_t *in = rec->inData;
     uint8_t *out = rec->outData;
+    trace("filter %dx%d, %d bytes per sample, row bytes in %d out %d, inData %p outData %p",
+          width, height, bytes, rec->inRowBytes, rec->outRowBytes, (void *)in, (void *)out);
     if (!in || !out || width <= 0 || height <= 0)
         return filterBadParameters;
 
@@ -239,7 +281,9 @@ static int16_t filter_pixels(FilterRecord *rec)
         goto done;
     }
 
-    switch (run_client(client, input, output, log_path)) {
+    const int exit_code = run_client(client, input, output, log_path);
+    trace("client exit code %d", exit_code);
+    switch (exit_code) {
     case CLIENT_NO_PHOTO:
         notify(L"'No Photo' tag found - do not share this photo.\n\nThe image was not changed.",
                MB_ICONWARNING);
@@ -293,6 +337,11 @@ done:
 
 static const Rect16 EMPTY_RECT = { 0, 0, 0, 0 };
 
+typedef int16_t (*AdvanceStateProc)(void);
+
+/* set once the pixels were handled, so a later Continue does not do it again */
+static BOOL finished;
+
 __declspec(dllexport) void PluginMain(const int16_t selector, FilterRecord *rec, intptr_t *data, int16_t *result)
 {
     (void)data;
@@ -306,27 +355,55 @@ __declspec(dllexport) void PluginMain(const int16_t selector, FilterRecord *rec,
         break;
 
     case filterSelectorStart: {
-        const BOOL rgb8 = rec->imageMode == plugInModeRGBColor && (rec->depth == 8 || rec->depth == 0);
-        const BOOL rgb16 = rec->imageMode == plugInModeRGB48 && rec->depth == 16;
-        if (!(rgb8 || rgb16) || rec->planes < 3) {
-            *result = filterBadMode;
+        trace("start: mode %d, depth %d, planes %d, image %dx%d, filterRect (%d,%d)-(%d,%d), "
+              "filterCase %d, advanceState %p",
+              rec->imageMode, rec->depth, rec->planes, rec->imageSize.h, rec->imageSize.v,
+              rec->filterRect.left, rec->filterRect.top, rec->filterRect.right, rec->filterRect.bottom,
+              rec->filterCase, rec->advanceState);
+        const BOOL rgb = rec->imageMode == plugInModeRGBColor || rec->imageMode == plugInModeRGB48;
+        const BOOL depth_ok = rec->depth == 0 || rec->depth == 8 || rec->depth == 16;
+        if (!rgb || !depth_ok || rec->planes < 3) {
+            notify(L"OfflineTags works on 8-bit and 16-bit RGB images only.", MB_ICONWARNING);
+            *result = userCanceledErr;
             break;
         }
-        /* ask for the whole area at once; the host answers by calling Continue */
+        /* ask for the whole area at once */
+        finished = FALSE;
         rec->inRect = rec->outRect = rec->filterRect;
         rec->inLoPlane = rec->outLoPlane = 0;
         rec->inHiPlane = rec->outHiPlane = 2;
         rec->maskRect = EMPTY_RECT;
+
+        /* Modern hosts hand over the buffers right away through advanceState.
+         * Without it, the host answers the rectangles above by calling Continue. */
+        if (rec->advanceState) {
+            int16_t err = ((AdvanceStateProc)rec->advanceState)();
+            trace("advanceState returned %d, inData %p, outData %p", err, rec->inData, rec->outData);
+            if (err == noErr && rec->inData && rec->outData) {
+                *result = filter_pixels(rec);
+                finished = TRUE;
+                rec->inRect = rec->outRect = rec->maskRect = EMPTY_RECT;
+                if (*result == noErr)
+                    ((AdvanceStateProc)rec->advanceState)(); /* hands the output back */
+            }
+        }
+        trace("start done: result %d, finished %d", *result, finished);
         break;
     }
 
     case filterSelectorContinue:
-        *result = filter_pixels(rec);
-        /* empty rectangles tell the host we are finished */
+        trace("continue: finished %d, inData %p, outData %p", finished, rec->inData, rec->outData);
+        if (!finished) {
+            *result = filter_pixels(rec);
+            finished = TRUE;
+        }
+        /* empty rectangles tell the host we are done */
         rec->inRect = rec->outRect = rec->maskRect = EMPTY_RECT;
+        trace("continue done: result %d", *result);
         break;
 
     default: /* Parameters, Prepare, Finish: nothing to do */
+        trace("selector %d", selector);
         break;
     }
 }

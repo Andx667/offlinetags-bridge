@@ -113,11 +113,13 @@ class FilterRecord(ctypes.Structure):
     ]
 
 
-def run_filter(plugin_path: str, rgb: np.ndarray) -> tuple[int, np.ndarray]:
+def run_filter(plugin_path: str, rgb: np.ndarray, advance_state: bool = False) -> tuple[int, np.ndarray]:
     """Run the plug-in on an RGB image (uint8, or uint16 in Photoshop's 0..32768 range).
 
-    Uses the classic protocol: Start announces the rectangles, the host fills
-    the buffers, Continue does the work. Returns (result code, output image).
+    By default uses the classic protocol: Start announces the rectangles, the
+    host fills the buffers, Continue does the work. With ``advance_state`` the
+    host offers the advanceState callback instead, which serves the buffers
+    while Start is still running. Returns (result code, output image).
     """
     dll = ctypes.CDLL(plugin_path)
     entry = dll.PluginMain
@@ -140,6 +142,24 @@ def run_filter(plugin_path: str, rgb: np.ndarray) -> tuple[int, np.ndarray]:
     source = np.ascontiguousarray(rgb)
     output = source.copy()
 
+    committed = []
+    served = np.full_like(source, 77)
+
+    @ctypes.CFUNCTYPE(c_int16)
+    def advance():
+        if rec.inRect.is_empty() and rec.outRect.is_empty():
+            # the plug-in is done: take over what it wrote
+            committed.append(served.copy())
+            rec.inData = rec.outData = None
+        else:
+            rec.inData = source.ctypes.data
+            rec.outData = served.ctypes.data
+            rec.inRowBytes = rec.outRowBytes = source.strides[0]
+        return NO_ERR
+
+    if advance_state:
+        rec.advanceState = ctypes.cast(advance, c_void_p)
+
     for selector in (SELECTOR_PARAMETERS, SELECTOR_PREPARE, SELECTOR_START):
         entry(selector, ctypes.byref(rec), ctypes.byref(data), ctypes.byref(result))
         if result.value != NO_ERR:
@@ -160,4 +180,6 @@ def run_filter(plugin_path: str, rgb: np.ndarray) -> tuple[int, np.ndarray]:
         output = scratch
 
     entry(SELECTOR_FINISH, ctypes.byref(rec), ctypes.byref(data), ctypes.byref(result))
+    if committed:
+        output = committed[-1]
     return result.value, output

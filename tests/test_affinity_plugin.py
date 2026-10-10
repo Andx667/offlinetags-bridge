@@ -4,6 +4,7 @@ The end-to-end tests also need the ONNX models and the photos in samples/.
 """
 
 import ctypes
+import os
 import struct
 import sys
 from pathlib import Path
@@ -14,7 +15,8 @@ import pytest
 from filter_host import NO_ERR, USER_CANCELED, FilterRecord, run_filter
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "affinity" / "build" / "OfflineTags.8bf"
+# the override lets a fresh build be tested while a host still has the regular file open
+PLUGIN = Path(os.environ.get("OFFLINETAGS_BRIDGE_PLUGIN") or ROOT / "affinity" / "build" / "OfflineTags.8bf")
 CLIENT = Path(sys.executable).with_name("offlinetags-bridge.exe")
 SAMPLES = ROOT / "samples"
 
@@ -70,6 +72,7 @@ def test_pipl_describes_the_filter():
     assert struct.unpack("<i", properties["vers"])[0] == 4 << 16
     assert properties["mode"][0] & 0x10, "RGB mode flag"
     assert properties["fici"] == bytes([1, 1, 0, 0]) * 7
+    assert properties["enbl"].rstrip(b"\0") == b"in (PSHOP_ImageMode, RGBMode, RGB48Mode)"
 
     entry_point = properties["8664"].split(b"\0")[0].decode()
     assert hasattr(ctypes.CDLL(str(PLUGIN)), entry_point)
@@ -100,9 +103,10 @@ def _changed_box(before: np.ndarray, after: np.ndarray):
     return rows.min(), rows.max(), cols.min(), cols.max()
 
 
-def test_blur_me_changes_only_the_face(plugin_env):
+@pytest.mark.parametrize("advance_state", [False, True], ids=["classic", "advanceState"])
+def test_blur_me_changes_only_the_face(plugin_env, advance_state):
     rgb = _sample("blur-me.jpg")
-    result, out = run_filter(str(PLUGIN), rgb)
+    result, out = run_filter(str(PLUGIN), rgb, advance_state)
     assert result == NO_ERR
     top, bottom, left, right = _changed_box(rgb, out)
     h, w = rgb.shape[:2]
@@ -122,9 +126,10 @@ def test_16_bit_keeps_untouched_pixels_exact(plugin_env):
     assert out.max() <= 32768
 
 
+@pytest.mark.parametrize("advance_state", [False, True], ids=["classic", "advanceState"])
 @pytest.mark.parametrize("name", ["no-photo.jpg", "no-badge.jpg", "tag-me.jpg"])
-def test_other_outcomes_leave_the_image_alone(plugin_env, name):
+def test_other_outcomes_leave_the_image_alone(plugin_env, name, advance_state):
     rgb = _sample(name)
-    result, out = run_filter(str(PLUGIN), rgb)
+    result, out = run_filter(str(PLUGIN), rgb, advance_state)
     assert result == USER_CANCELED
     assert np.array_equal(out, rgb)
